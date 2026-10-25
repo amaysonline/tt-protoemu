@@ -1,0 +1,18 @@
+[tasks]
+bmc
+prove
+
+[options]
+bmc: mode bmc
+prove: mode prove
+depth 20
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal pe_core.v
+prep -top pe_core
+
+[files]
+../src/pe_core.v
