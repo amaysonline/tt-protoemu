@@ -153,10 +153,15 @@ class Engine:
                 elif dst == 2:
                     self.y = d
             elif opc == 6:  # SET
-                # TODO(P1): SET PINS (dst 0): set_count pins (at most 5) from set_base get the low
-                #           bits of the value: set pmask and pdata like OUT does.
-                # TODO(P2): SET X (dst 1) and SET Y (dst 2).
-                raise NotImplementedError("TODO(P1) SET")
+                dst, value = arg >> 5, arg & 31
+                if dst == 0:
+                    # SET PINS: set_count pins (at most 5) from set_base get the low bits of
+                    # the value. Same mask-and-data shape as OUT PINS above.
+                    k = min(self.set_count, 5)
+                    pmask, pdata = rotl(mask(k), self.set_base), rotl(value & mask(k), self.set_base)
+                else:
+                    # TODO(P2): SET X (dst 1) and SET Y (dst 2).
+                    raise NotImplementedError("TODO(P2) SET X / SET Y")
             else:
                 # TODO(P2): WAIT (snapshot on WAIT CHANGE), IN, PUSH/PULL, MOV (TIME is read-and-
                 #           restart: set time_next = 1), IRQ. Look at the RTL you wrote: same rules.
@@ -164,6 +169,9 @@ class Engine:
             self.pc = nxt
             self.dly = delay
         ov = (self.out_val & ~pmask) | (pdata & pmask)
-        # TODO(P1): side-set: if sse, force bit side_pin of ov to ssv (even when stalled).
+        # Side-set: force bit side_pin of ov to ssv. This sits outside "if not stall", so it
+        # applies even while the instruction stalls, and it comes last, so it beats OUT/SET/MOV.
+        if sse:
+            ov = (ov & ~(1 << self.side_pin)) | (ssv << self.side_pin)
         self.out_val = ov & M8
         self.time = time_next
