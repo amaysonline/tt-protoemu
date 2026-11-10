@@ -135,8 +135,13 @@ def assemble(text):
         elif op == "nop":
             opc, arg = OPC["mov"], (MOV_DST["y"] << 5) | MOV_SRC["y"]
         elif op == "set":
-            # TODO(P1): 'set pins|x|y, value' with value 0..31 -> arg = dst << 5 | value
-            raise AsmError(f"line {n}: TODO(P1) encode set")
+            # 'set pins|x|y, value' with value 0..31 -> arg = dst << 5 | value
+            if len(args) != 2:
+                raise AsmError(f"line {n}: set needs a destination and a value")
+            value = num(args[1], n)
+            if not 0 <= value <= 31:
+                raise AsmError(f"line {n}: set value must be 0..31")
+            opc, arg = OPC["set"], (sym(SET_DST, args[0], "set destination") << 5) | value
         elif op == "irq":
             # TODO(P2): 'irq set' -> arg = 0x80, 'irq clear' -> arg = 0
             raise AsmError(f"line {n}: TODO(P2) encode irq")
