@@ -86,7 +86,8 @@ class Engine:
                 out |= v << i
                 oe |= 1 << i
             elif self.pinmode[i] == 2:
-                pass  # TODO(P2): open-drain drives 0 (oe = 1, out = 0) only when v == 0
+                if v == 0:      # open-drain: pull the line low, or let go of it. Never drive 1.
+                    oe |= 1 << i
         return out, oe
 
     # ---- one system clock -------------------------------------------------
@@ -108,9 +109,14 @@ class Engine:
 
     def _stall(self, w, pins):
         opc, arg = w >> 13, w & M8
-        # TODO(P2): WAIT (opcode 1): stall until pin arg & 7 equals arg >> 7, or, for WAIT CHANGE
-        #           (arg & 0x40), until ((pins ^ self.snap) & self.watch_mask) != 0.
-        #           PUSH/PULL (opcode 4) without noblock: stall while the FIFO can't be used.
+        if opc == 1:  # WAIT
+            if arg & 0x40:  # WAIT CHANGE: until a watched pin differs from the snapshot
+                return ((pins ^ self.snap) & self.watch_mask) == 0
+            return ((pins >> (arg & 7)) & 1) != (arg >> 7)  # WAIT pin: until pin N has the level
+        if opc == 4 and not arg & 0x40:  # PUSH/PULL without noblock
+            if arg & 0x80:
+                return not self.tx  # PULL waits for a byte
+            return len(self.rx) >= self.FIFO_DEPTH  # PUSH waits for space
         return False
 
     def _tick(self, pins):
@@ -132,10 +138,36 @@ class Engine:
                 cond, addr = arg >> 5, arg & 31
                 if cond == 0:
                     take = True
-                else:
-                    raise NotImplementedError("TODO(P2): conditions !x, x--, !y, y--, x!=y, pin, !osre")
+                elif cond == 1:  # !x
+                    take = self.x == 0
+                elif cond == 2:  # x--: test first, then always decrement
+                    take = self.x != 0
+                    self.x = (self.x - 1) & M8
+                elif cond == 3:  # !y
+                    take = self.y == 0
+                elif cond == 4:  # y--
+                    take = self.y != 0
+                    self.y = (self.y - 1) & M8
+                elif cond == 5:  # x!=y
+                    take = self.x != self.y
+                elif cond == 6:  # pin: raw pin jmp_pin, not rotated by in_base
+                    take = bool((pins >> self.jmp_pin) & 1)
+                else:  # !osre: output shift register not empty
+                    take = self.ocnt != 8
                 if take:
                     nxt = addr
+            elif opc == 1:  # WAIT: the waiting is in _stall(); completing WAIT CHANGE takes a snapshot
+                if arg & 0x40:
+                    self.snap = pins
+            elif opc == 2:  # IN
+                n = (arg & 7) or 8
+                src = arg >> 5
+                d = (in_val, self.x, self.y)[src] & mask(n) if src < 3 else 0  # 3 = null; 4..7 undefined, read as zeros
+                if self.in_msb:  # shift left, new bits enter at the bottom
+                    self.isr = ((self.isr << n) | d) & M8
+                else:            # shift right, new bits enter at the top
+                    self.isr = ((self.isr >> n) | (d << (8 - n))) & M8
+                self.icnt = min(self.icnt + n, 8)
             elif opc == 3:  # OUT  (done: the worked example)
                 n = (arg & 7) or 8
                 dst = arg >> 5
@@ -159,13 +191,44 @@ class Engine:
                     # the value. Same mask-and-data shape as OUT PINS above.
                     k = min(self.set_count, 5)
                     pmask, pdata = rotl(mask(k), self.set_base), rotl(value & mask(k), self.set_base)
-                else:
-                    # TODO(P2): SET X (dst 1) and SET Y (dst 2).
-                    raise NotImplementedError("TODO(P2) SET X / SET Y")
-            else:
-                # TODO(P2): WAIT (snapshot on WAIT CHANGE), IN, PUSH/PULL, MOV (TIME is read-and-
-                #           restart: set time_next = 1), IRQ. Look at the RTL you wrote: same rules.
-                raise NotImplementedError(f"TODO(P2) opcode {opc}")
+                elif dst == 1:
+                    self.x = value
+                elif dst == 2:
+                    self.y = value
+            elif opc == 4:  # PUSH / PULL (a blocking one only gets here once the FIFO can be used)
+                if arg & 0x80:  # PULL: TX FIFO -> OSR. Empty (noblock only): OSR = X
+                    self.osr = self.tx.popleft() if self.tx else self.x
+                    self.ocnt = 0
+                else:           # PUSH: ISR -> RX FIFO. Full (noblock only): byte dropped, overflow flag
+                    if len(self.rx) < self.FIFO_DEPTH:
+                        self.rx.append(self.isr)
+                    else:
+                        self.rx_ovf = 1
+                    self.isr = 0
+                    self.icnt = 0
+            elif opc == 5:  # MOV
+                dst, mop, src = arg >> 5, (arg >> 3) & 3, arg & 7
+                if src == 6:    # TIME is read-and-restart
+                    v = self.time
+                    time_next = 1
+                else:           # 5 = null; 7 undefined, reads as zero
+                    v = (in_val, self.x, self.y, self.isr, self.osr, 0, 0, 0)[src]
+                if mop == 1:
+                    v = ~v & M8
+                elif mop == 2:
+                    v = rev8(v)
+                if dst == 0:    # all 8 pins, rotated by out_base
+                    pmask, pdata = M8, rotl(v, self.out_base)
+                elif dst == 1:
+                    self.x = v
+                elif dst == 2:
+                    self.y = v
+                elif dst == 3:
+                    self.isr, self.icnt = v, 0
+                elif dst == 4:
+                    self.osr, self.ocnt = v, 0
+            else:  # opc == 7, IRQ
+                self.irq = arg >> 7
             self.pc = nxt
             self.dly = delay
         ov = (self.out_val & ~pmask) | (pdata & pmask)

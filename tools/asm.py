@@ -45,9 +45,11 @@ def assemble(text):
         s = re.split(r";|//|#", raw, maxsplit=1)[0].strip()
         if not s:
             continue
-        while ":" in s and not s.startswith("."):
-            lab, s = s.split(":", 1)
-            lab = lab.strip()
+        while not s.startswith("."):
+            m = re.match(r"(\w+)\s*:(?!:)", s)      # 'name:' is a label; '::' is mov's bit-reverse
+            if not m:
+                break
+            lab, s = m.group(1), s[m.end():]
             if lab in labels:
                 raise AsmError(f"line {n}: label '{lab}' defined twice")
             labels[lab] = len(lines)
@@ -116,22 +118,49 @@ def assemble(text):
             cond, dest = ("", args[0]) if len(args) == 1 else (args[0], args[1])
             opc, arg = OPC["jmp"], (sym(JMP_COND, cond, "condition") << 5) | target(dest)
         elif op == "wait":
-            # TODO(P2): 'wait 0|1 pin N' -> arg = polarity << 7 | N
-            #           'wait change'    -> arg = 1 << 6
-            raise AsmError(f"line {n}: TODO(P2) encode wait")
+            # 'wait 0|1 pin N' -> arg = polarity << 7 | N
+            # 'wait change'    -> arg = 1 << 6
+            toks = rest.split()
+            if toks == ["change"]:
+                arg = 1 << 6
+            elif len(toks) == 3 and toks[1] == "pin":
+                level, pin = num(toks[0], n), num(toks[2], n)
+                if level not in (0, 1):
+                    raise AsmError(f"line {n}: wait level must be 0 or 1")
+                if not 0 <= pin <= 7:
+                    raise AsmError(f"line {n}: wait pin must be 0..7")
+                arg = (level << 7) | pin
+            else:
+                raise AsmError(f"line {n}: expected 'wait 0|1 pin N' or 'wait change'")
+            opc = OPC["wait"]
         elif op == "in":
-            # TODO(P2): arg = source << 5 | count(bits)   (sources in IN_SRC)
-            raise AsmError(f"line {n}: TODO(P2) encode in")
+            # arg = source << 5 | count(bits)   (sources in IN_SRC)
+            if len(args) != 2:
+                raise AsmError(f"line {n}: in needs a source and a bit count")
+            opc, arg = OPC["in"], (sym(IN_SRC, args[0], "in source") << 5) | count(args[1])
         elif op == "out":
-            # TODO(P2): arg = destination << 5 | count(bits)   (destinations in OUT_DST)
-            raise AsmError(f"line {n}: TODO(P2) encode out")
+            # arg = destination << 5 | count(bits)   (destinations in OUT_DST)
+            if len(args) != 2:
+                raise AsmError(f"line {n}: out needs a destination and a bit count")
+            opc, arg = OPC["out"], (sym(OUT_DST, args[0], "out destination") << 5) | count(args[1])
         elif op in ("push", "pull"):
-            # TODO(P2): arg = (op == pull) << 7 | (noblock) << 6; 'block' is the default
-            raise AsmError(f"line {n}: TODO(P2) encode {op}")
+            # arg = (op == pull) << 7 | (noblock) << 6; 'block' is the default
+            mode = rest.strip() or "block"
+            if mode not in ("block", "noblock"):
+                raise AsmError(f"line {n}: expected '{op}', '{op} block' or '{op} noblock'")
+            opc, arg = OPC["pushpull"], ((op == "pull") << 7) | ((mode == "noblock") << 6)
         elif op == "mov":
-            # TODO(P2): 'mov dst, src', 'mov dst, ~src' (invert), 'mov dst, ::src' (bit-reverse)
-            #           arg = dst << 5 | op << 3 | src   (op: 0 none, 1 invert, 2 reverse)
-            raise AsmError(f"line {n}: TODO(P2) encode mov")
+            # 'mov dst, src', 'mov dst, ~src' (invert), 'mov dst, ::src' (bit-reverse)
+            # arg = dst << 5 | op << 3 | src   (op: 0 none, 1 invert, 2 reverse)
+            if len(args) != 2:
+                raise AsmError(f"line {n}: mov needs a destination and a source")
+            src, mop = args[1], 0
+            if src.startswith("~"):
+                src, mop = src[1:].strip(), 1
+            elif src.startswith("::"):
+                src, mop = src[2:].strip(), 2
+            opc = OPC["mov"]
+            arg = (sym(MOV_DST, args[0], "mov destination") << 5) | (mop << 3) | sym(MOV_SRC, src, "mov source")
         elif op == "nop":
             opc, arg = OPC["mov"], (MOV_DST["y"] << 5) | MOV_SRC["y"]
         elif op == "set":
@@ -143,8 +172,10 @@ def assemble(text):
                 raise AsmError(f"line {n}: set value must be 0..31")
             opc, arg = OPC["set"], (sym(SET_DST, args[0], "set destination") << 5) | value
         elif op == "irq":
-            # TODO(P2): 'irq set' -> arg = 0x80, 'irq clear' -> arg = 0
-            raise AsmError(f"line {n}: TODO(P2) encode irq")
+            # 'irq set' -> arg = 0x80, 'irq clear' -> arg = 0
+            if rest.strip() not in ("set", "clear"):
+                raise AsmError(f"line {n}: expected 'irq set' or 'irq clear'")
+            opc, arg = OPC["irq"], 0x80 if rest.strip() == "set" else 0
         else:
             raise AsmError(f"line {n}: unknown instruction '{op}'")
 

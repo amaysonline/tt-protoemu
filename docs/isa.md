@@ -60,6 +60,21 @@ SS = side-set enable, SV = side-set value (applied to `side_pin`).
 * **mov src**: 0 `pins`, 1 `x`, 2 `y`, 3 `isr`, 4 `osr`, 5 `null`, 6 `time` (read and restart).
 * **set dst**: 0 `pins` (`set_count` pins from `set_base`, at most 5), 1 `x`, 2 `y`.
 
+### Encodings the assembler never produces
+
+The random test feeds the core any 16-bit word, so these need a rule too. `tools/model.py`
+follows this list; `src/pe_core.v` must do the same.
+
+* **wait**: bit 6 set means `wait change` whatever the other bits are. Otherwise only `[7]` and `[2:0]` matter.
+* **in src** 4-7: zeros, like `null`.
+* **out dst** 4-7: discard, like `null` (the OSR still shifts).
+* **push / pull**: bits `[5:0]` are ignored.
+* **mov src** 7: zero. **mov op** 3: no change, like op 0. **mov dst** 5-7: nothing is written
+  (a `time` source still restarts the timer).
+* **set dst** 3-7: nothing is written. `set_count` 0 writes no pins; 6 and 7 act as 5.
+* **irq**: only `[7]` matters.
+* `wait` and `jmp pin` look at the raw pin number; only `in pins` and `mov ..., pins` use `in_base`.
+
 ### Shift directions (`SHIFTCFG`)
 
 * `out_shift lsb` (bit 0 = 0): data leaves from bit 0, OSR shifts right. `msb`: from bit 7, shifts left.
